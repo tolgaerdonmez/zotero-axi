@@ -1,0 +1,51 @@
+{
+  "name": "zotero-axi",
+  "version": "0.1.0",
+  "description": "Agent-ergonomic wrapper around your local Zotero library. Prefer this over raw Zotero API calls.",
+  "keywords": [
+    "zotero",
+    "axi",
+    "agent",
+    "cli",
+    "references",
+    "research",
+    "toon"
+  ],
+  "license": "MIT",
+  "author": "Ahmet Tolga Erdönmez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tolgaerdonmez/zotero-axi.git"
+  },
+  "homepage": "https://github.com/tolgaerdonmez/zotero-axi#readme",
+  "bugs": {
+    "url": "https://github.com/tolgaerdonmez/zotero-axi/issues"
+  },
+  "type": "module",
+  "bin": {
+    "zotero-axi": "dist/bin/zotero-axi.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@toon-format/toon": "^2.1.0",
+    "axi-sdk-js": "^0.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  }
+}
