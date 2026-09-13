@@ -1,14 +1,17 @@
 name: Release
 
-# Publishes to npm when you publish a GitHub Release (tag like v0.1.0).
-# Requires repo secret NPM_TOKEN (an npm "Automation" access token).
+# Stages an npm publish when you publish a GitHub Release (tag like v0.1.0).
+# The NPM_TOKEN lives in the `staging` GitHub Environment and has npm
+# "Read and write (stage only)" permission, so this workflow STAGES the version;
+# a maintainer promotes it to live on npmjs.com (or with `npm publish` locally).
 on:
   release:
     types: [published]
 
 jobs:
-  publish:
+  stage:
     runs-on: ubuntu-latest
+    environment: staging
     permissions:
       contents: read
       id-token: write # enables npm provenance
@@ -34,7 +37,9 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to npm
+      - name: Stage publish to npm
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: echo "Staged ${GITHUB_REF_NAME}. Promote it to live on npmjs.com to finish the release." >> "$GITHUB_STEP_SUMMARY"
