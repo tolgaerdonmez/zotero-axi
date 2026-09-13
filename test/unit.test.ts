@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { getFlag, getIntFlag, hasFlag, rejectUnknownFlags, getPositional } from "../src/args.js";
 import { renderList, renderHelp, field, year } from "../src/toon.js";
 import { authorsOf } from "../src/commands/schema.js";
+import { arxivId } from "../src/zotero.js";
 
 test("getFlag handles space and equals forms", () => {
   assert.equal(getFlag(["--limit", "20"], "--limit"), "20");
@@ -46,6 +47,15 @@ test("renderList produces TOON with a sized header", () => {
 test("renderHelp formats a numbered block", () => {
   assert.equal(renderHelp(["a", "b"]), "help[2]:\n  a\n  b");
   assert.equal(renderHelp([]), "");
+});
+
+test("arxivId recognizes urls and bare ids, rejects DOIs", () => {
+  assert.equal(arxivId("https://arxiv.org/abs/2405.05175"), "2405.05175");
+  assert.equal(arxivId("https://arxiv.org/abs/2302.12173v2"), "2302.12173");
+  assert.equal(arxivId("2405.05175"), "2405.05175");
+  assert.equal(arxivId("2405.05175v3"), "2405.05175");
+  assert.equal(arxivId("10.1145/3576915.3623145"), null);
+  assert.equal(arxivId("https://example.com/paper"), null);
 });
 
 test("authorsOf collapses long creator lists", () => {

@@ -48,8 +48,11 @@ zotero-axi setup hooks
 2. **Enable the local API:** Zotero → *Settings* → *Advanced* →
    **"Allow other applications on this computer to communicate with Zotero"**.
 3. **Node ≥ 18.**
-4. **For `add` only:** Docker or Podman — `zotero-axi` auto-runs the Zotero
-   `translation-server` (port 1969) to extract metadata.
+4. **For `add`:** nothing extra by default — metadata is extracted by
+   Wikimedia's hosted Zotero translation service (Citoid). The paper's
+   identifier is sent to Wikimedia's public API. Prefer a fully local
+   extractor? Run a Zotero `translation-server` (Docker/Podman) and pass
+   `zotero-axi add <input> --via server`.
 
 ## Commands
 
@@ -58,7 +61,7 @@ zotero-axi setup hooks
 | `zotero-axi` | Home view: library state + recent items + hints |
 | `zotero-axi search "<q>"` | Keyword search. `-e`/`--everything`, `--limit <n>`, `--fields <a,b,c>` |
 | `zotero-axi view <key>` | Metadata + abstract (truncated) + notes. `--full` |
-| `zotero-axi add <url\|doi\|arxiv\|isbn>` | Import a paper (arXiv PDF attached automatically) |
+| `zotero-axi add <url\|doi\|arxiv\|isbn\|pmid>` | Import a paper (Citoid by default; `--via server` for local translation-server; arXiv PDF attached automatically) |
 | `zotero-axi recent [--limit <n>]` | Most recently added items |
 | `zotero-axi setup hooks` | Install/repair agent SessionStart hooks |
 | `zotero-axi --version` / `--help` | Version / help |
@@ -68,7 +71,7 @@ Exit codes: `0` success, `1` runtime error, `2` usage error (bad/unknown flag).
 ## Ports
 
 - `23119` — Zotero desktop (connector + local read API)
-- `1969` — translation-server (only for `add`, started automatically)
+- `1969` — translation-server (only when `add --via server` is used)
 
 ## Development
 

@@ -4,6 +4,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { AxiError } from "axi-sdk-js";
+import { VERSION } from "./version.js";
 
 export const ZOTERO = "http://127.0.0.1:23119";
 export const TRANSLATION = "http://127.0.0.1:1969";
@@ -220,8 +221,117 @@ function stripHtml(html: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Add (translation-server → connector)
+// Add — metadata extraction + save to the library
+//
+// Two interchangeable backends, both saving through the Zotero connector:
+//   - "citoid" (default): Wikimedia's hosted Zotero translation-server. No
+//     Docker, no local service. Resolves URL / DOI / ISBN / PMID; arXiv is
+//     routed via its registered DOI (10.48550/arXiv.<id>) for clean `preprint`
+//     metadata. The identifier is sent to Wikimedia's public API.
+//   - "server": a local Zotero translation-server on :1969 (Docker/Podman), for
+//     fully offline/self-hosted extraction.
 // ---------------------------------------------------------------------------
+
+export type AddVia = "citoid" | "server";
+
+export interface AddResult {
+  saved: Array<{ title: string; itemType: string }>;
+  via: AddVia;
+  multiple?: number;
+}
+
+const CITOID = "https://en.wikipedia.org/api/rest_v1/data/citation/zotero";
+const USER_AGENT = `zotero-axi/${VERSION} (https://github.com/tolgaerdonmez/zotero-axi)`;
+
+/** Extract an arXiv id from a URL or bare id, else null. Exported for tests. */
+export function arxivId(input: string): string | null {
+  if (/arxiv\.org/i.test(input)) {
+    const m = input.match(/(\d{4}\.\d{4,5})(v\d+)?/);
+    return m ? m[1] : null;
+  }
+  if (/^\d{4}\.\d{4,5}(v\d+)?$/.test(input)) return input.replace(/v\d+$/, "");
+  return null;
+}
+
+/** Drop Zotero-library-specific fields Citoid adds so the connector treats the
+ * item like fresh translator output. */
+function sanitizeItems(items: any[]): any[] {
+  return items.map((it) => {
+    const { key, version, relations, dateAdded, dateModified, ...rest } = it;
+    return rest;
+  });
+}
+
+function attachArxivPdf(items: any[], id: string | null): void {
+  if (!id) return;
+  const first = items[0];
+  if (!first) return;
+  if (!first.attachments || first.attachments.length === 0) {
+    first.attachments = [
+      { title: "arXiv.org PDF", url: `https://arxiv.org/pdf/${id}.pdf`, mimeType: "application/pdf" },
+    ];
+  }
+}
+
+function summarize(items: any[]): Array<{ title: string; itemType: string }> {
+  return items
+    .filter((i) => i.itemType !== "attachment" && i.itemType !== "note")
+    .map((i) => ({ title: String(i.title ?? "(untitled)"), itemType: String(i.itemType ?? "unknown") }));
+}
+
+async function saveToZotero(items: any[], uri: string): Promise<void> {
+  const sessionID = randomUUID().replace(/-/g, "").slice(0, 16);
+  let res: Response;
+  try {
+    res = await fetch(`${ZOTERO}/connector/saveItems`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, uri, sessionID }),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (err) {
+    throw new AxiError(`Failed to save to Zotero: ${(err as Error).message}`, "ZOTERO_ERROR");
+  }
+  if (res.status !== 201 && !res.ok) {
+    throw new AxiError(`Zotero refused the save (HTTP ${res.status})`, "ZOTERO_ERROR");
+  }
+}
+
+// --- Citoid backend (default) ---------------------------------------------
+
+async function addViaCitoid(input: string): Promise<AddResult> {
+  const id = arxivId(input);
+  const query = id ? `10.48550/arXiv.${id}` : input;
+  let res: Response;
+  try {
+    res = await fetch(`${CITOID}/${encodeURIComponent(query)}`, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (err) {
+    throw new AxiError(`Citoid request failed: ${(err as Error).message}`, "TRANSLATE_FAILED", [
+      "Check your connection, or use --via server for a local translator",
+    ]);
+  }
+  if (res.status === 404) {
+    throw new AxiError("Citoid could not resolve that URL/identifier", "TRANSLATE_FAILED", [
+      "Try a DOI or arXiv id, or --via server for a local translator",
+    ]);
+  }
+  if (!res.ok) {
+    throw new AxiError(`Citoid returned HTTP ${res.status}`, "TRANSLATE_FAILED");
+  }
+  const raw = (await res.json().catch(() => [])) as any[];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new AxiError("Citoid returned no metadata for that input", "TRANSLATE_FAILED");
+  }
+  const items = sanitizeItems(raw);
+  attachArxivPdf(items, id);
+  await saveToZotero(items, input);
+  return { via: "citoid", saved: summarize(items) };
+}
+
+// --- translation-server backend (Docker/Podman) ---------------------------
 
 async function isTranslationUp(): Promise<boolean> {
   try {
@@ -240,11 +350,9 @@ function startTranslationServer(): boolean {
   for (const [cmd, image] of runtimes) {
     if (!commandExists(cmd)) continue;
     try {
-      execFileSync(
-        cmd,
-        ["run", "-d", "-p", "1969:1969", "--rm", "--name", "translation-server", image],
-        { stdio: "ignore" },
-      );
+      execFileSync(cmd, ["run", "-d", "-p", "1969:1969", "--rm", "--name", "translation-server", image], {
+        stdio: "ignore",
+      });
       return true;
     } catch {
       /* try next runtime */
@@ -256,8 +364,8 @@ function startTranslationServer(): boolean {
 async function ensureTranslationServer(): Promise<void> {
   if (await isTranslationUp()) return;
   if (!startTranslationServer()) {
-    throw new AxiError("Zotero translation-server is not running and Docker/Podman was not found", "NO_TRANSLATOR", [
-      "Install Docker or Podman, or run: docker run -d -p 1969:1969 --rm zotero/translation-server",
+    throw new AxiError("translation-server is not running and Docker/Podman was not found", "NO_TRANSLATOR", [
+      "Use the default Citoid backend (drop --via server), or install Docker/Podman",
     ]);
   }
   const start = Date.now();
@@ -268,21 +376,12 @@ async function ensureTranslationServer(): Promise<void> {
   throw new AxiError("translation-server did not become ready in time", "NO_TRANSLATOR");
 }
 
-export interface AddResult {
-  saved: Array<{ title: string; itemType: string }>;
-  multiple?: number;
-}
-
-/** Add a paper by URL, DOI, ISBN or arXiv id. Idempotency is left to Zotero's
- * own duplicate handling; this returns what was sent to the library. */
-export async function addByIdentifier(input: string): Promise<AddResult> {
+async function addViaServer(input: string): Promise<AddResult> {
   await ensureTranslationServer();
-
   const isUrl = /^https?:\/\//i.test(input);
-  const endpoint = isUrl ? "/web" : "/search";
   let res: Response;
   try {
-    res = await fetch(`${TRANSLATION}${endpoint}`, {
+    res = await fetch(`${TRANSLATION}${isUrl ? "/web" : "/search"}`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: input,
@@ -291,60 +390,27 @@ export async function addByIdentifier(input: string): Promise<AddResult> {
   } catch (err) {
     throw new AxiError(`translation-server request failed: ${(err as Error).message}`, "NO_TRANSLATOR");
   }
-
   if (res.status === 300) {
-    // Multiple candidate items; we don't auto-pick.
     const choices = await res.json().catch(() => ({}));
     const n = choices && typeof choices === "object" ? Object.keys(choices).length : 0;
-    return { saved: [], multiple: n };
+    return { via: "server", saved: [], multiple: n };
   }
   if (!res.ok) {
     throw new AxiError(`Could not extract metadata (HTTP ${res.status})`, "TRANSLATE_FAILED", [
       "The URL/identifier may not be supported by any translator",
     ]);
   }
-
-  let items = (await res.json()) as any[];
-  if (!Array.isArray(items) || items.length === 0) {
+  const raw = (await res.json()) as any[];
+  if (!Array.isArray(raw) || raw.length === 0) {
     throw new AxiError("Could not extract metadata for that input", "TRANSLATE_FAILED");
   }
+  attachArxivPdf(raw, arxivId(input));
+  await saveToZotero(raw, input);
+  return { via: "server", saved: summarize(raw) };
+}
 
-  // Attach the arXiv PDF when the source is arXiv and none is present.
-  const arxiv = input.match(/(\d{4}\.\d{4,5})(v\d+)?/);
-  if (/arxiv\.org/i.test(input) && arxiv) {
-    const first = items[0];
-    if (!first.attachments || first.attachments.length === 0) {
-      first.attachments = [
-        {
-          title: "arXiv.org PDF",
-          url: `https://arxiv.org/pdf/${arxiv[1]}.pdf`,
-          mimeType: "application/pdf",
-        },
-      ];
-    }
-  }
-
-  const sessionID = randomUUID().replace(/-/g, "").slice(0, 16);
-  let saveRes: Response;
-  try {
-    saveRes = await fetch(`${ZOTERO}/connector/saveItems`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, uri: input, sessionID }),
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch (err) {
-    throw new AxiError(`Failed to save to Zotero: ${(err as Error).message}`, "ZOTERO_ERROR");
-  }
-
-  if (saveRes.status !== 201 && !saveRes.ok) {
-    throw new AxiError(`Zotero refused the save (HTTP ${saveRes.status})`, "ZOTERO_ERROR");
-  }
-
-  return {
-    saved: items.map((i) => ({
-      title: String(i.title ?? "(untitled)"),
-      itemType: String(i.itemType ?? "unknown"),
-    })),
-  };
+/** Add a paper by URL, DOI, ISBN, PMID or arXiv id. Defaults to the Citoid
+ * backend; pass via:"server" for a local translation-server. */
+export async function addPaper(input: string, opts: { via?: AddVia } = {}): Promise<AddResult> {
+  return opts.via === "server" ? addViaServer(input) : addViaCitoid(input);
 }
